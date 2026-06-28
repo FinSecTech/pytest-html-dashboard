@@ -406,6 +406,7 @@ def pytest_terminal_summary(terminalreporter, exitstatus, config):
     Post-process HTML report after ALL pytest operations complete.
     This runs after pytest-html finishes writing, ensuring we don't get overwritten.
     """
+    _ = exitstatus  # unused hook parameter — keep signature for pytest compatibility
     # Get HTML file path from pytest-html
     html_path = getattr(config.option, 'htmlpath', None)
 
@@ -419,15 +420,42 @@ def pytest_terminal_summary(terminalreporter, exitstatus, config):
             error_reporter = getattr(config, '_dashboard_error_reporter', None)
 
             if reporter_config and reporter_config.report.enable_enhanced_reporting:
-                # Enhance the HTML report with dashboard features
-                enhance_html_report_dashboard(
-                    html_path=html_path,
-                    config=reporter_config,
-                    test_results=_test_results,
-                    error_reporter=error_reporter
-                )
-                print(
-                    f"\n[SUCCESS] Enhanced dashboard report generated: {html_path}")
+                # Rebuild test results from terminalreporter.stats.
+                # CRITICAL: with pytest-xdist the module-level _test_results
+                # dict is populated only in worker processes, but
+                # pytest_terminal_summary runs in the controller where
+                # _test_results is empty.  terminalreporter.stats is the
+                # only reliable source of aggregated results at this point.
+                test_results = _test_results.copy()
+                if not test_results:
+                    for outcome in ('passed', 'failed', 'skipped', 'error'):
+                        for report in terminalreporter.stats.get(outcome, []):
+                            nodeid = getattr(report, 'nodeid', None)
+                            if not nodeid or nodeid in test_results:
+                                continue
+                            test_results[nodeid] = {
+                                'nodeid': nodeid,
+                                'outcome': 'failed' if outcome == 'error' else outcome,
+                                'duration': getattr(report, 'duration', 0.0),
+                                'failed': outcome in ('failed', 'error'),
+                                'passed': outcome == 'passed',
+                                'skipped': outcome == 'skipped',
+                            }
+
+                if test_results:
+                    enhance_html_report_dashboard(
+                        html_path=html_path,
+                        config=reporter_config,
+                        test_results=test_results,
+                        error_reporter=error_reporter
+                    )
+                    print(
+                        f"\n[SUCCESS] Enhanced dashboard report generated: {html_path}")
+                else:
+                    print(
+                        f"\n[WARNING] No test results available for dashboard. "
+                        f"Report generated without dashboard enhancements: {html_path}")
+
             else:
                 print(
                     f"\n[WARNING] Enhanced reporting disabled. Basic report generated: {html_path}")
