@@ -401,6 +401,7 @@ def pytest_sessionfinish(session, exitstatus):
         pass
 
 
+@pytest.hookimpl(trylast=True)
 def pytest_terminal_summary(terminalreporter, exitstatus, config):
     """
     Post-process HTML report after ALL pytest operations complete.
@@ -430,27 +431,111 @@ def pytest_terminal_summary(terminalreporter, exitstatus, config):
                 if not test_results:
                     for outcome in ('passed', 'failed', 'skipped', 'error'):
                         for report in terminalreporter.stats.get(outcome, []):
+                            # CRITICAL FIX: Only process call-phase reports.
+                            # terminalreporter.stats contains reports from ALL phases
+                            # (setup, call, teardown). Without filtering by when=="call",
+                            # setup/teardown reports get counted as "passed" even when
+                            # the actual test (call) failed, because the setup report
+                            # (passed) is encountered first and the call report (failed)
+                            # gets skipped due to the nodeid-dedup check.
+                            if getattr(report, 'when', None) != 'call':
+                                continue
                             nodeid = getattr(report, 'nodeid', None)
                             if not nodeid or nodeid in test_results:
                                 continue
+                            report_outcome = getattr(report, 'outcome', outcome)
                             test_results[nodeid] = {
                                 'nodeid': nodeid,
-                                'outcome': 'failed' if outcome == 'error' else outcome,
+                                'outcome': 'failed' if report_outcome == 'error' else report_outcome,
                                 'duration': getattr(report, 'duration', 0.0),
-                                'failed': outcome in ('failed', 'error'),
-                                'passed': outcome == 'passed',
-                                'skipped': outcome == 'skipped',
+                                'failed': report_outcome in ('failed', 'error'),
+                                'passed': report_outcome == 'passed',
+                                'skipped': report_outcome == 'skipped',
                             }
 
                 if test_results:
+                    # Detect parallel execution mode from xdist
+                    num_processes = getattr(config.option, 'numprocesses', None)
+                    if num_processes is not None and num_processes > 0:
+                        parallel_execution = f"{num_processes} workers"
+                    elif num_processes is not None:
+                        parallel_execution = "Broken"
+                    else:
+                        parallel_execution = "No"
+
+                    # --- XDIST FIX: Extract error details from TestReport objects ---
+                    # When xdist is active, the controller's error_reporter has no error
+                    # data because errors are captured in worker processes.  The
+                    # terminalreporter.stats *does* contain deserialized TestReport
+                    # objects with longrepr holding the traceback.  Inject these into
+                    # the controller's error_reporter so the "View Error" popups work.
+                    if error_reporter and (num_processes is not None and num_processes > 0):
+                        for outcome in ('failed', 'error'):
+                            for report in terminalreporter.stats.get(outcome, []):
+                                nodeid = getattr(report, 'nodeid', None)
+                                if not nodeid:
+                                    continue
+                                # Only inject if the reporter doesn't already have this test
+                                if not error_reporter.get_test_errors(nodeid):
+                                    longrepr = getattr(report, 'longrepr', None)
+                                    log_content = str(longrepr) if longrepr else ""
+                                    exception = getattr(report, 'exception', None)
+                                    try:
+                                        error_reporter.capture_test_error(
+                                            test_id=nodeid,
+                                            log_content=log_content,
+                                            exception=exception,
+                                        )
+                                    except Exception:
+                                        pass  # Don't crash on error injection
+
                     enhance_html_report_dashboard(
                         html_path=html_path,
                         config=reporter_config,
                         test_results=test_results,
-                        error_reporter=error_reporter
+                        error_reporter=error_reporter,
+                        parallel_execution=parallel_execution,
                     )
                     print(
                         f"\n[SUCCESS] Enhanced dashboard report generated: {html_path}")
+
+                    # --- XDIST FIX: Save history from rebuilt test_results ---
+                    # In xdist mode _test_results was empty, so pytest_sessionfinish
+                    # couldn't save history.  Now that we have rebuilt test_results
+                    # from terminalreporter.stats, save the run here.
+                    if _history_tracker and not _test_results:
+                        try:
+                            passed = sum(1 for r in test_results.values() if r.get('outcome') == 'passed')
+                            failed = sum(1 for r in test_results.values() if r.get('outcome') == 'failed')
+                            skipped = sum(1 for r in test_results.values() if r.get('outcome') == 'skipped')
+                            errors = sum(1 for r in test_results.values() if r.get('outcome') == 'error')
+                            total_duration = sum(r.get('duration', 0) for r in test_results.values())
+
+                            tests_list = []
+                            for tid, result in test_results.items():
+                                tests_list.append({
+                                    'name': result.get('nodeid', tid),
+                                    'outcome': result.get('outcome', 'unknown'),
+                                    'duration': result.get('duration', 0),
+                                    'error_message': '',
+                                    'error_type': '',
+                                })
+
+                            results_dict = {
+                                'summary': {
+                                    'total': len(test_results),
+                                    'passed': passed,
+                                    'failed': failed,
+                                    'skipped': skipped,
+                                    'errors': errors,
+                                    'duration': total_duration,
+                                },
+                                'tests': tests_list,
+                            }
+                            run_id = _history_tracker.save_test_run(results_dict)
+                            print(f"\n[Historical Tracking] Saved test run #{run_id} with {len(tests_list)} tests to database")
+                        except Exception as e:
+                            print(f"\nWarning: Failed to save historical data from xdist fallback: {e}")
                 else:
                     print(
                         f"\n[WARNING] No test results available for dashboard. "
