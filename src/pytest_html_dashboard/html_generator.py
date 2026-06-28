@@ -16,13 +16,15 @@ class HTMLGeneratorDashboard:
     """Generates enhanced HTML content with modern dashboard styling."""
 
     def __init__(self, config, test_results: Dict[str, Any], error_reporter,
-                 ai_insights=None, historical_data=None):
+                 ai_insights=None, historical_data=None,
+                 parallel_execution="No"):
         """Initialize HTML generator with configuration and test data."""
         self.config = config
         self.test_results = test_results
         self.error_reporter = error_reporter
         self.ai_insights = ai_insights or []
         self.historical_data = historical_data
+        self.parallel_execution = parallel_execution
 
     def generate_dashboard_css(self) -> str:
         """Generate dashboard CSS with modern styling."""
@@ -653,7 +655,7 @@ class HTMLGeneratorDashboard:
 
     def generate_test_configuration_section(self) -> str:
         """Generate test configuration section."""
-        return """
+        return f"""
         <div class="comprehensive-section">
             <div class="section-title">⚙️ Test Configuration</div>
             <div class="info-grid">
@@ -667,7 +669,7 @@ class HTMLGeneratorDashboard:
                 </div>
                 <div class="info-item">
                     <div class="info-label">Parallel Execution:</div>
-                    <div class="info-value">No</div>
+                    <div class="info-value">{self.parallel_execution}</div>
                 </div>
                 <div class="info-item">
                     <div class="info-label">Retry Failed Tests:</div>
@@ -1791,7 +1793,8 @@ class HTMLGeneratorDashboard:
 
 
 def enhance_html_report_dashboard(
-        html_path: str, config, test_results: Dict[str, Any], error_reporter):
+        html_path: str, config, test_results: Dict[str, Any], error_reporter,
+        parallel_execution="No"):
     """Generate standalone dashboard-style HTML report (replacing pytest-html default)."""
     if not os.path.exists(html_path):
         raise FileNotFoundError(f"HTML report not found: {html_path}")
@@ -1807,7 +1810,7 @@ def enhance_html_report_dashboard(
             failures = [
                 {
                     'test_id': test_id,
-                    'error_info': error_reporter.get_error_info(test_id)
+                    'error_info': error_reporter.get_test_errors(test_id)
                 }
                 for test_id, result in test_results.items()
                 if result.get('failed', False)
@@ -1832,7 +1835,8 @@ def enhance_html_report_dashboard(
 
     # Generate complete standalone dashboard HTML
     generator = HTMLGeneratorDashboard(
-        config, test_results, error_reporter, ai_insights, historical_data
+        config, test_results, error_reporter, ai_insights, historical_data,
+        parallel_execution=parallel_execution,
     )
     dashboard_content = generator.generate_enhanced_html()
 
