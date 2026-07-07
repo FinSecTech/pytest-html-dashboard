@@ -17,7 +17,8 @@ class HTMLGeneratorDashboard:
 
     def __init__(self, config, test_results: Dict[str, Any], error_reporter,
                  ai_insights=None, historical_data=None,
-                 parallel_execution="No"):
+                 parallel_execution="No",
+                 screenshots: Optional[Dict[str, str]] = None):
         """Initialize HTML generator with configuration and test data."""
         self.config = config
         self.test_results = test_results
@@ -25,6 +26,7 @@ class HTMLGeneratorDashboard:
         self.ai_insights = ai_insights or []
         self.historical_data = historical_data
         self.parallel_execution = parallel_execution
+        self.screenshots = screenshots or {}
 
     def generate_dashboard_css(self) -> str:
         """Generate dashboard CSS with modern styling."""
@@ -825,6 +827,11 @@ class HTMLGeneratorDashboard:
         </div>
         """
 
+    def _sanitize_nodeid(self, nodeid: str) -> str:
+        """Sanitize a test nodeid to match the screenshot filename format."""
+        import re as _re
+        return _re.sub(r'[^\w\-_.]', '_', nodeid)
+
     def generate_test_steps_section(self) -> str:
         """Generate Detailed Step Execution Results section with enhanced formatting."""
         # Count test steps from results
@@ -880,12 +887,31 @@ class HTMLGeneratorDashboard:
                         error_data.error_message[
                             :50]}...' if error_data.error_message else 'AssertionError'
 
+            # Check for screenshot
+            safe_name = self._sanitize_nodeid(test_id)
+            screenshot_data_url = self.screenshots.get(safe_name)
+
+            if screenshot_data_url:
+                # Use a stored data attribute and JS popup (not <a href=.. target=_blank>)
+                # because data: URIs in navigation are unreliable across browsers.
+                screenshot_html = (
+                    f'<div style="text-align:center;">'
+                    f'<img src="{screenshot_data_url}" '
+                    f'style="max-width: 80px; max-height: 60px; border: 1px solid #ddd; '
+                    f'border-radius: 4px; cursor: pointer;" '
+                    f'alt="Screenshot" '
+                    f'onclick="openScreenshot(this.src)">'
+                    f'</div>'
+                )
+            else:
+                screenshot_html = '<span style="color: #999;">N/A</span>'
+
             step_rows.append(f"""
                 <tr class="step-row-{status_class}">
                     <td style="text-align: center; font-weight: 600;">{test_case}</td>
                     <td style="text-align: left; padding-left: 15px;">{step_number}. {test_name}</td>
                     <td style="text-align: center;">{status_badge}</td>
-                    <td style="text-align: center; color: #999;">N/A</td>
+                    <td style="text-align: center;">{screenshot_html}</td>
                     <td style="text-align: left; color: #d32f2f; font-size: 12px;">{error_details}</td>
                 </tr>
             """)
@@ -1081,6 +1107,34 @@ class HTMLGeneratorDashboard:
                 </table>
             </div>
         </div>
+        """
+
+    def generate_screenshot_modal(self) -> str:
+        """Generate the screenshot lightbox modal (always included)."""
+        return """
+    <!-- Screenshot Modal -->
+    <div id="screenshotModal"
+         style="display:none; position:fixed; z-index:9999; left:0; top:0;
+                width:100%; height:100%; background:rgba(0,0,0,0.85);
+                justify-content:center; align-items:center; cursor:pointer;">
+        <span onclick="closeScreenshot()"
+              style="position:absolute; top:20px; right:40px; color:#fff;
+                     font-size:40px; font-weight:bold; cursor:pointer; z-index:10000;">&times;</span>
+        <img id="screenshotFull" style="max-width:90%; max-height:90%; border-radius:6px; box-shadow:0 0 20px rgba(0,0,0,0.5);">
+    </div>
+    <script>
+    function openScreenshot(src) {
+        document.getElementById('screenshotFull').src = src;
+        document.getElementById('screenshotModal').style.display = 'flex';
+    }
+    function closeScreenshot() {
+        document.getElementById('screenshotModal').style.display = 'none';
+        document.getElementById('screenshotFull').src = '';
+    }
+    document.getElementById('screenshotModal').addEventListener('click', function(e) {
+        if (e.target === this) closeScreenshot();
+    });
+    </script>
         """
 
     def generate_chartjs_script(self) -> str:
@@ -1786,6 +1840,9 @@ class HTMLGeneratorDashboard:
         if self.config.historical.enable_tracking:
             html_parts.append(self.generate_historical_trends_section())
 
+        # Add screenshot modal (always included)
+        html_parts.append(self.generate_screenshot_modal())
+
         # Add Chart.js script
         html_parts.append(self.generate_chartjs_script())
 
@@ -1794,7 +1851,8 @@ class HTMLGeneratorDashboard:
 
 def enhance_html_report_dashboard(
         html_path: str, config, test_results: Dict[str, Any], error_reporter,
-        parallel_execution="No"):
+        parallel_execution="No",
+        screenshots: Optional[Dict[str, str]] = None):
     """Generate standalone dashboard-style HTML report (replacing pytest-html default)."""
     if not os.path.exists(html_path):
         raise FileNotFoundError(f"HTML report not found: {html_path}")
@@ -1837,6 +1895,7 @@ def enhance_html_report_dashboard(
     generator = HTMLGeneratorDashboard(
         config, test_results, error_reporter, ai_insights, historical_data,
         parallel_execution=parallel_execution,
+        screenshots=screenshots,
     )
     dashboard_content = generator.generate_enhanced_html()
 
