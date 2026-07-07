@@ -5,9 +5,11 @@ pytest-dashboard plugin
 Pytest hooks for dashboard-style HTML reports
 """
 
+import base64
 import pytest
 import os
 import time
+from pathlib import Path
 from typing import Dict, Any, Optional
 from .config import ReporterConfig
 from .error_reporting import ErrorClassifier, EnhancedErrorReporter
@@ -17,6 +19,33 @@ from .history import TestHistory
 # Global state for collecting test results
 _test_results = {}
 _history_tracker: Optional[TestHistory] = None
+
+# ── Screenshots on failure ──────────────────────────────────────
+# Populated by reading the screenshots directory at report time.
+FAILED_SCREENSHOTS: dict[str, str] = {}
+
+
+def _load_screenshots(report_dir: str) -> dict[str, str]:
+    """Scan the screenshots directory for PNG files and return
+    a dict mapping sanitized nodeid → base64 data URL.
+
+    Screenshots are saved to <report_dir>/screenshots/<sanitized_name>.png
+    by the conftest.py hook in worker processes.
+    """
+    screenshots_dir = Path(report_dir) / "screenshots"
+    if not screenshots_dir.is_dir():
+        return {}
+
+    result: dict[str, str] = {}
+    for png_file in sorted(screenshots_dir.glob("*.png")):
+        safe_name = png_file.stem  # sanitized nodeid, no extension
+        try:
+            with open(png_file, "rb") as f:
+                b64 = base64.b64encode(f.read()).decode("ascii")
+            result[safe_name] = f"data:image/png;base64,{b64}"
+        except Exception as e:
+            print(f"[WARNING] Failed to load screenshot '{png_file}': {e}", file=__import__('sys').stderr)
+    return result
 
 
 def pytest_addoption(parser):
@@ -489,12 +518,19 @@ def pytest_terminal_summary(terminalreporter, exitstatus, config):
                                     except Exception:
                                         pass  # Don't crash on error injection
 
+                    # Load screenshots captured during test execution
+                    report_dir = os.path.dirname(html_path)
+                    screenshots = _load_screenshots(report_dir)
+                    if screenshots:
+                        print(f"\n[SCREENSHOTS] Loaded {len(screenshots)} screenshot(s) for the dashboard report")
+
                     enhance_html_report_dashboard(
                         html_path=html_path,
                         config=reporter_config,
                         test_results=test_results,
                         error_reporter=error_reporter,
                         parallel_execution=parallel_execution,
+                        screenshots=screenshots,
                     )
                     print(
                         f"\n[SUCCESS] Enhanced dashboard report generated: {html_path}")
